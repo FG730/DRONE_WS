@@ -1,0 +1,17 @@
+build/
+install/
+log/
+logs/
+plots/
+tuning_node_logs/
+
+__pycache__/
+*.py[cod]
+*.so
+
+.colcon/
+.pytest_cache/
+
+# px4_msgs is an external dependency cloned from:
+# https://github.com/PX4/px4_msgs.git
+src/px4_msgs/
