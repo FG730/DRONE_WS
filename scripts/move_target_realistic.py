@@ -11,7 +11,7 @@ def main():
     parser = argparse.ArgumentParser(description="Move a Gazebo red target with speed-limited trajectories.")
     parser.add_argument("--world", default="default")
     parser.add_argument("--name", default="red_target")
-    parser.add_argument("--mode", choices=["straight", "s_curve"], default="s_curve")
+    parser.add_argument("--mode", choices=["straight", "arc", "s_curve"], default="s_curve")
     parser.add_argument("--speed", type=float, default=3.0, help="Nominal target forward speed in m/s.")
     parser.add_argument("--start-x", type=float, default=12.0)
     parser.add_argument("--start-y", type=float, default=0.0)
@@ -20,6 +20,8 @@ def main():
     parser.add_argument("--dt", type=float, default=0.05)
     parser.add_argument("--duration", type=float, default=0.0, help="Move duration in seconds. Use 0 to run until Ctrl+C.")
     parser.add_argument("--radius", type=float, default=0.35)
+    parser.add_argument("--arc-radius", type=float, default=60.0, help="Arc radius in meters for arc mode.")
+    parser.add_argument("--arc-direction", choices=["left", "right"], default="left")
     parser.add_argument("--s-amp-y", type=float, default=1.5)
     parser.add_argument("--s-period", type=float, default=6.0)
     parser.add_argument("--z-amp", type=float, default=0.25)
@@ -130,6 +132,13 @@ def target_pose(args, t, forward, lateral):
     along = args.speed * t
     side = 0.0
     z_offset = 0.0
+
+    if args.mode == "arc":
+        arc_radius = max(args.arc_radius, 0.1)
+        direction = 1.0 if args.arc_direction == "left" else -1.0
+        theta = along / arc_radius
+        along = arc_radius * math.sin(theta)
+        side = direction * arc_radius * (1.0 - math.cos(theta))
 
     if args.mode == "s_curve":
         side = args.s_amp_y * math.sin(2.0 * math.pi * t / max(args.s_period, 0.1))

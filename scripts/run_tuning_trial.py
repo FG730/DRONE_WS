@@ -53,19 +53,69 @@ CONTROLLER_PARAMS = [
 ]
 
 
+ARC_FAST_CONTROLLER_PARAMS = [
+    "-p base_forward_speed:=7.2",
+    "-p max_forward_speed:=8.0",
+    "-p min_forward_scale:=0.72",
+    "-p kp_lateral:=0.0100",
+    "-p kd_lateral:=0.0022",
+    "-p kp_vertical:=-0.0100",
+    "-p kd_vertical:=-0.0010",
+    "-p max_lateral_speed:=2.4",
+    "-p max_vertical_speed:=1.8",
+    "-p max_yaw_rate:=0.35",
+    "-p center_x_px:=45.0",
+    "-p center_y_px:=70.0",
+    "-p slow_x_px:=520.0",
+    "-p slow_y_px:=320.0",
+    "-p rate_slow_px_s:=1800.0",
+    "-p pitch_pixel_gain:=1.0",
+    "-p roll_pixel_gain:=0.70",
+    "-p pitch_sign:=1.0",
+    "-p roll_sign:=1.0",
+    "-p vertical_error_alpha:=0.45",
+    "-p lateral_error_alpha:=0.35",
+    "-p vertical_deadband_px:=3.0",
+    "-p lateral_deadband_px:=6.0",
+    "-p max_vertical_accel:=2.2",
+    "-p max_lateral_accel:=2.2",
+    "-p enable_vertical_area_schedule:=true",
+    "-p far_area_px:=2500.0",
+    "-p near_area_px:=18000.0",
+    "-p near_vertical_gain_scale:=0.45",
+    "-p near_vertical_speed_scale:=0.45",
+    "-p near_vertical_accel_scale:=0.45",
+    "-p enable_terminal_dash:=true",
+    "-p terminal_area_px:=10000.0",
+    "-p terminal_min_forward_scale:=0.95",
+    "-p terminal_lateral_scale:=0.20",
+    "-p terminal_vertical_scale:=0.12",
+    "-p terminal_yaw_scale:=0.20",
+    "-p max_virtual_offset_px:=260.0",
+]
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run one automated visual tracking tuning trial.")
     parser.add_argument("--name", default=time.strftime("trial_%H%M%S"))
     parser.add_argument("--timeout", type=float, default=90.0)
     parser.add_argument("--pre-target-delay", type=float, default=5.0)
     parser.add_argument("--capture-radius", type=float, default=1.2)
+    parser.add_argument("--target-mode", choices=["straight", "arc", "s_curve"], default="straight")
+    parser.add_argument("--controller-profile", choices=["trial7", "arc_fast"], default="trial7")
     parser.add_argument("--target-speed", type=float, default=3.0)
     parser.add_argument("--start-x", type=float, default=8.0)
     parser.add_argument("--start-y", type=float, default=2.0)
     parser.add_argument("--start-z", type=float, default=4.0)
     parser.add_argument("--heading-deg", type=float, default=0.0)
     parser.add_argument("--target-dt", type=float, default=0.02)
-    parser.add_argument("--max-start-z", type=float, default=20.0)
+    parser.add_argument("--arc-radius", type=float, default=60.0)
+    parser.add_argument("--arc-direction", choices=["left", "right"], default="left")
+    parser.add_argument("--s-amp-y", type=float, default=1.5)
+    parser.add_argument("--s-period", type=float, default=6.0)
+    parser.add_argument("--z-amp", type=float, default=0.25)
+    parser.add_argument("--z-period", type=float, default=9.0)
+    parser.add_argument("--max-start-z", type=float, default=4.5)
     parser.add_argument("--min-start-z", type=float, default=2.0)
     parser.add_argument("--max-start-xy", type=float, default=30.0)
     parser.add_argument("--no-bridge", action="store_true")
@@ -122,7 +172,7 @@ def main():
             start_process(
                 "controller",
                 f"{ROS_SETUP} && ros2 run vision_tracking attitude_pn_bearing_servo --ros-args "
-                + " ".join(CONTROLLER_PARAMS),
+                + " ".join(controller_params(args.controller_profile)),
                 prefix,
             )
         )
@@ -132,10 +182,10 @@ def main():
             start_process(
                 "offboard",
                 f"{ROS_SETUP} && ros2 run vision_tracking px4_visual_offboard --ros-args "
-                "-p max_forward_speed:=6.0 "
-                "-p max_lateral_speed:=1.6 "
+                f"-p max_forward_speed:={offboard_limit(args.controller_profile, 'forward')} "
+                f"-p max_lateral_speed:={offboard_limit(args.controller_profile, 'lateral')} "
                 "-p max_vertical_speed:=1.4 "
-                "-p max_yaw_rate:=0.25 "
+                f"-p max_yaw_rate:={offboard_limit(args.controller_profile, 'yaw')} "
                 "-p forward_sign:=1.0 "
                 "-p lateral_sign:=1.0 "
                 "-p mode_retry_sec:=1.0",
@@ -150,13 +200,19 @@ def main():
             start_process(
                 "target",
                 f"{ROS_SETUP} && ~/drone_ws/scripts/move_target_realistic.py "
-                "--mode straight "
+                f"--mode {args.target_mode} "
                 f"--speed {args.target_speed} "
                 f"--start-x {args.start_x} "
                 f"--start-y {args.start_y} "
                 f"--start-z {args.start_z} "
                 f"--heading-deg {args.heading_deg} "
-                f"--dt {args.target_dt}",
+                f"--dt {args.target_dt} "
+                f"--arc-radius {args.arc_radius} "
+                f"--arc-direction {args.arc_direction} "
+                f"--s-amp-y {args.s_amp_y} "
+                f"--s-period {args.s_period} "
+                f"--z-amp {args.z_amp} "
+                f"--z-period {args.z_period}",
                 prefix,
             )
         )
@@ -187,6 +243,26 @@ def start_process(name, command, prefix):
         preexec_fn=os.setsid,
     )
     return name, proc, log_file
+
+
+def controller_params(profile):
+    if profile == "arc_fast":
+        return ARC_FAST_CONTROLLER_PARAMS
+    return CONTROLLER_PARAMS
+
+
+def offboard_limit(profile, axis):
+    if profile == "arc_fast":
+        return {
+            "forward": 8.0,
+            "lateral": 2.4,
+            "yaw": 0.35,
+        }[axis]
+    return {
+        "forward": 6.0,
+        "lateral": 1.6,
+        "yaw": 0.25,
+    }[axis]
 
 
 def stop_processes(processes):
