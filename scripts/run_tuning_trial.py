@@ -3,6 +3,7 @@
 import argparse
 import csv
 import glob
+import math
 import os
 import signal
 import subprocess
@@ -10,7 +11,7 @@ import time
 from pathlib import Path
 
 
-ROS_SETUP = "source /opt/ros/humble/setup.bash && source ~/drone_ws/install/setup.bash"
+ROS_SETUP = "source /opt/ros/humble/setup.bash && source /home/wsy/drone_ws/install/setup.bash"
 CAMERA_TOPIC = "/world/default/model/x500_mono_cam_0/link/camera_link/sensor/camera/image"
 LOG_DIR = Path.home() / "drone_ws" / "logs"
 NODE_LOG_DIR = Path.home() / "drone_ws" / "tuning_node_logs"
@@ -95,14 +96,136 @@ ARC_FAST_CONTROLLER_PARAMS = [
 ]
 
 
+ARC_BALANCED_CONTROLLER_PARAMS = [
+    "-p base_forward_speed:=7.0",
+    "-p max_forward_speed:=8.0",
+    "-p min_forward_scale:=0.48",
+    "-p kp_lateral:=0.0120",
+    "-p kd_lateral:=0.0025",
+    "-p kp_vertical:=-0.0130",
+    "-p kd_vertical:=-0.0013",
+    "-p max_lateral_speed:=2.8",
+    "-p max_vertical_speed:=2.3",
+    "-p max_yaw_rate:=0.42",
+    "-p center_x_px:=40.0",
+    "-p center_y_px:=55.0",
+    "-p slow_x_px:=360.0",
+    "-p slow_y_px:=220.0",
+    "-p rate_slow_px_s:=1500.0",
+    "-p pitch_pixel_gain:=0.85",
+    "-p roll_pixel_gain:=0.80",
+    "-p pitch_sign:=1.0",
+    "-p roll_sign:=1.0",
+    "-p vertical_error_alpha:=0.55",
+    "-p lateral_error_alpha:=0.45",
+    "-p vertical_deadband_px:=2.0",
+    "-p lateral_deadband_px:=5.0",
+    "-p max_vertical_accel:=3.0",
+    "-p max_lateral_accel:=3.0",
+    "-p enable_vertical_area_schedule:=true",
+    "-p far_area_px:=2500.0",
+    "-p near_area_px:=22000.0",
+    "-p near_vertical_gain_scale:=0.65",
+    "-p near_vertical_speed_scale:=0.65",
+    "-p near_vertical_accel_scale:=0.65",
+    "-p enable_terminal_dash:=true",
+    "-p terminal_area_px:=18000.0",
+    "-p terminal_min_forward_scale:=0.72",
+    "-p terminal_lateral_scale:=0.35",
+    "-p terminal_vertical_scale:=0.35",
+    "-p terminal_yaw_scale:=0.30",
+    "-p max_virtual_offset_px:=220.0",
+]
+
+
+LOS_RATE_CONTROLLER_PARAMS = [
+    "-p fixed_forward_speed:=9.0",
+    "-p max_forward_speed:=10.0",
+    "-p min_forward_scale:=0.35",
+    "-p angle_slow_x_rad:=0.75",
+    "-p angle_slow_y_rad:=0.65",
+    "-p los_rate_slow_rad_s:=2.0",
+    "-p angle_gain_lateral:=5.0",
+    "-p angle_gain_vertical:=3.4",
+    "-p navigation_gain_lateral:=1.2",
+    "-p navigation_gain_vertical:=0.9",
+    "-p yaw_angle_gain:=0.85",
+    "-p yaw_rate_gain:=0.16",
+    "-p max_lateral_speed:=3.2",
+    "-p max_vertical_speed:=1.3",
+    "-p max_yaw_rate:=0.45",
+    "-p max_lateral_accel:=5.0",
+    "-p max_vertical_accel:=1.6",
+    "-p max_yaw_accel:=1.2",
+    "-p angle_alpha:=0.55",
+    "-p los_rate_alpha:=0.30",
+    "-p angle_deadband_x_rad:=0.006",
+    "-p angle_deadband_y_rad:=0.006",
+    "-p enable_terminal_dash:=true",
+    "-p close_area_px:=12000.0",
+    "-p close_center_x_rad:=0.26",
+    "-p close_center_y_rad:=0.22",
+    "-p close_min_forward_scale:=0.45",
+    "-p close_max_forward_scale:=0.85",
+    "-p close_correction_scale:=1.05",
+    "-p terminal_area_px:=22000.0",
+    "-p terminal_center_x_rad:=0.16",
+    "-p terminal_center_y_rad:=0.12",
+    "-p terminal_min_forward_scale:=0.95",
+    "-p terminal_offcenter_forward_scale:=0.22",
+    "-p terminal_correction_scale:=0.80",
+    "-p enable_keep_in_view:=true",
+    "-p keep_in_view_begin_ratio:=0.55",
+    "-p keep_in_view_full_ratio:=0.95",
+    "-p edge_angle_x_rad:=0.56",
+    "-p edge_angle_y_rad:=0.46",
+    "-p edge_los_rate_rad_s:=1.15",
+    "-p edge_forward_scale:=0.10",
+    "-p edge_correction_scale:=1.55",
+    "-p pitch_pixel_gain:=0.85",
+    "-p roll_pixel_gain:=0.80",
+    "-p pitch_sign:=1.0",
+    "-p roll_sign:=1.0",
+    "-p max_virtual_offset_px:=220.0",
+]
+
+
+LOS_RATE_PREDICTIVE_CONTROLLER_PARAMS = LOS_RATE_CONTROLLER_PARAMS + [
+    "-p enable_predictive_terminal:=true",
+    "-p predict_time_sec:=0.25",
+    "-p predict_start_area_px:=15000.0",
+    "-p predict_full_area_px:=36000.0",
+    "-p predict_rate_trigger_rad_s:=0.75",
+    "-p predict_rate_full_rad_s:=1.80",
+    "-p predict_center_x_rad:=0.20",
+    "-p predict_center_y_rad:=0.16",
+    "-p predict_max_angle_rad:=0.78",
+    "-p predict_forward_scale:=0.20",
+    "-p predict_lateral_boost:=1.45",
+    "-p predict_vertical_boost:=1.10",
+    "-p predict_yaw_scale:=1.00",
+    "-p edge_forward_scale:=0.25",
+    "-p edge_correction_scale:=1.65",
+    "-p max_lateral_speed:=4.5",
+    "-p max_yaw_rate:=0.70",
+    "-p max_lateral_accel:=7.0",
+    "-p max_yaw_accel:=2.0",
+]
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run one automated visual tracking tuning trial.")
     parser.add_argument("--name", default=time.strftime("trial_%H%M%S"))
     parser.add_argument("--timeout", type=float, default=90.0)
     parser.add_argument("--pre-target-delay", type=float, default=5.0)
+    parser.add_argument("--post-capture-delay", type=float, default=5.0)
     parser.add_argument("--capture-radius", type=float, default=1.2)
     parser.add_argument("--target-mode", choices=["straight", "arc", "s_curve"], default="straight")
-    parser.add_argument("--controller-profile", choices=["trial7", "arc_fast"], default="trial7")
+    parser.add_argument(
+        "--controller-profile",
+        choices=["trial7", "arc_fast", "arc_balanced", "los_rate", "los_rate_predictive"],
+        default="trial7",
+    )
     parser.add_argument("--target-speed", type=float, default=3.0)
     parser.add_argument("--start-x", type=float, default=8.0)
     parser.add_argument("--start-y", type=float, default=2.0)
@@ -120,6 +243,11 @@ def main():
     parser.add_argument("--max-start-xy", type=float, default=30.0)
     parser.add_argument("--no-bridge", action="store_true")
     parser.add_argument("--no-color-tracker", action="store_true")
+    parser.add_argument(
+        "--allow-lost-before-capture",
+        action="store_true",
+        help="Allow a trial to count even if the target is lost after first visual acquisition.",
+    )
     args = parser.parse_args()
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -147,7 +275,7 @@ def main():
             processes.append(
                 start_process(
                     "color_tracker",
-                    f"{ROS_SETUP} && ros2 run vision_tracking color_tracker",
+                    f"{ROS_SETUP} && ros2 run vision_tracking color_tracker --ros-args -p display:=false",
                     prefix,
                 )
             )
@@ -155,43 +283,13 @@ def main():
 
         processes.append(
             start_process(
-                "logger",
-                f"{ROS_SETUP} && ros2 run vision_tracking experiment_logger --ros-args "
-                f"-p capture_radius:={args.capture_radius} "
-                "-p capture_hold_sec:=0.0 "
-                "-p require_fresh_target_pose:=true "
-                "-p target_pose_stale_sec:=1.0 "
-                "-p swap_px4_xy_to_gazebo:=true "
-                f"-p file_prefix:={prefix}",
-                prefix,
-            )
-        )
-        time.sleep(1.0)
-
-        processes.append(
-            start_process(
                 "controller",
-                f"{ROS_SETUP} && ros2 run vision_tracking attitude_pn_bearing_servo --ros-args "
+                f"{ROS_SETUP} && ros2 run vision_tracking {controller_node(args.controller_profile)} --ros-args "
                 + " ".join(controller_params(args.controller_profile)),
                 prefix,
             )
         )
         time.sleep(1.0)
-
-        processes.append(
-            start_process(
-                "offboard",
-                f"{ROS_SETUP} && ros2 run vision_tracking px4_visual_offboard --ros-args "
-                f"-p max_forward_speed:={offboard_limit(args.controller_profile, 'forward')} "
-                f"-p max_lateral_speed:={offboard_limit(args.controller_profile, 'lateral')} "
-                "-p max_vertical_speed:=1.4 "
-                f"-p max_yaw_rate:={offboard_limit(args.controller_profile, 'yaw')} "
-                "-p forward_sign:=1.0 "
-                "-p lateral_sign:=1.0 "
-                "-p mode_retry_sec:=1.0",
-                prefix,
-            )
-        )
 
         reset_pose_file()
         time.sleep(args.pre_target_delay)
@@ -217,17 +315,57 @@ def main():
             )
         )
 
-        if not wait_for_fresh_target_pose(timeout=5.0):
+        if not wait_for_fresh_target_pose(timeout=12.0):
             print("invalid trial: target pose file was not freshly written")
             return
 
+        processes.append(
+            start_process(
+                "logger",
+                f"{ROS_SETUP} && ros2 run vision_tracking experiment_logger --ros-args "
+                f"-p capture_radius:={args.capture_radius} "
+                "-p capture_hold_sec:=0.0 "
+                "-p require_fresh_target_pose:=true "
+                "-p target_pose_stale_sec:=2.5 "
+                "-p swap_px4_xy_to_gazebo:=true "
+                f"-p file_prefix:={prefix}",
+                prefix,
+            )
+        )
+        time.sleep(0.3)
+
+        processes.append(
+            start_process(
+                "offboard",
+                f"{ROS_SETUP} && ros2 run vision_tracking px4_visual_offboard --ros-args "
+                f"-p max_forward_speed:={offboard_limit(args.controller_profile, 'forward')} "
+                f"-p max_lateral_speed:={offboard_limit(args.controller_profile, 'lateral')} "
+                f"-p max_vertical_speed:={offboard_limit(args.controller_profile, 'vertical')} "
+                f"-p max_yaw_rate:={offboard_limit(args.controller_profile, 'yaw')} "
+                "-p forward_sign:=1.0 "
+                "-p lateral_sign:=1.0 "
+                "-p mode_retry_sec:=1.0 "
+                "-p hold_after_capture:=true "
+                "-p capture_hold_mode_delay_sec:=2.0",
+                prefix,
+            )
+        )
+
         csv_path = wait_for_csv(prefix, timeout=10.0)
         print(f"CSV: {csv_path}")
-        result = wait_for_trial_result(csv_path, args.timeout)
+        result = wait_for_trial_result(
+            csv_path,
+            args.timeout,
+            strict_no_lost=not args.allow_lost_before_capture,
+        )
         print(result)
+        if result == "captured" and args.post_capture_delay > 0.0:
+            print(f"post-capture zero-velocity hold for {args.post_capture_delay:.1f}s")
+            time.sleep(args.post_capture_delay)
 
     finally:
         stop_processes(processes)
+        cleanup_target()
 
     score_latest()
 
@@ -246,21 +384,53 @@ def start_process(name, command, prefix):
 
 
 def controller_params(profile):
+    if profile == "los_rate_predictive":
+        return LOS_RATE_PREDICTIVE_CONTROLLER_PARAMS
+    if profile == "los_rate":
+        return LOS_RATE_CONTROLLER_PARAMS
+    if profile == "arc_balanced":
+        return ARC_BALANCED_CONTROLLER_PARAMS
     if profile == "arc_fast":
         return ARC_FAST_CONTROLLER_PARAMS
     return CONTROLLER_PARAMS
 
 
+def controller_node(profile):
+    if profile in ("los_rate", "los_rate_predictive"):
+        return "los_rate_bearing_servo"
+    return "attitude_pn_bearing_servo"
+
+
 def offboard_limit(profile, axis):
+    if profile in ("los_rate", "los_rate_predictive"):
+        limits = {
+            "forward": 10.0,
+            "lateral": 3.2,
+            "vertical": 2.4,
+            "yaw": 0.45,
+        }
+        if profile == "los_rate_predictive":
+            limits["lateral"] = 4.5
+            limits["yaw"] = 0.70
+        return limits[axis]
     if profile == "arc_fast":
         return {
             "forward": 8.0,
             "lateral": 2.4,
+            "vertical": 1.4,
             "yaw": 0.35,
+        }[axis]
+    if profile == "arc_balanced":
+        return {
+            "forward": 8.0,
+            "lateral": 2.8,
+            "vertical": 2.2,
+            "yaw": 0.42,
         }[axis]
     return {
         "forward": 6.0,
         "lateral": 1.6,
+        "vertical": 1.4,
         "yaw": 0.25,
     }[axis]
 
@@ -298,6 +468,25 @@ def reset_pose_file():
         pass
 
 
+def cleanup_target():
+    remove_command = [
+        "gz",
+        "service",
+        "-s",
+        "/world/default/remove",
+        "--reqtype",
+        "gz.msgs.Entity",
+        "--reptype",
+        "gz.msgs.Boolean",
+        "--timeout",
+        "2000",
+        "--req",
+        'name: "red_target" type: MODEL',
+    ]
+    subprocess.run(remove_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    reset_pose_file()
+
+
 def wait_for_fresh_target_pose(timeout):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -320,14 +509,30 @@ def wait_for_fresh_target_pose(timeout):
     return False
 
 
-def wait_for_trial_result(csv_path, timeout):
+def wait_for_trial_result(csv_path, timeout, strict_no_lost=True):
     start = time.time()
     last_target_time = 0.0
+    target_seen = False
     while time.time() - start < timeout:
         rows = read_rows(csv_path)
         if rows:
+            for row in rows:
+                if target_is_seen(row):
+                    target_seen = True
+                elif strict_no_lost and target_seen and row.get("state") == "LOST":
+                    row_time = to_float(row.get("time_sec", ""))
+                    return f"invalid_lost_before_capture time_sec={row_time:.3f}"
+
             captured = [row for row in rows if row.get("captured") == "1"]
             if captured:
+                if strict_no_lost:
+                    lost_report = lost_before_capture(rows[: rows.index(captured[0]) + 1])
+                    if lost_report["lost"]:
+                        return (
+                            "invalid_lost_before_capture "
+                            f"lost_rows={lost_report['rows']} "
+                            f"max_lost_duration={lost_report['max_duration']:.3f}s"
+                        )
                 return "captured"
             target_times = [to_float(row.get("target_time_sec", "")) for row in rows]
             target_times = [value for value in target_times if value == value]
@@ -352,15 +557,66 @@ def to_float(value):
         return float("nan")
 
 
+def target_is_seen(row):
+    state = row.get("state", "")
+    if state in ("UNKNOWN", "SEARCH", "LOST", "CAPTURED"):
+        return False
+    return math.isfinite(to_float(row.get("error_x_px", ""))) or math.isfinite(to_float(row.get("area_px", "")))
+
+
+def lost_before_capture(rows):
+    first_seen = None
+    for index, row in enumerate(rows):
+        if target_is_seen(row):
+            first_seen = index
+            break
+
+    if first_seen is None:
+        return {"lost": False, "rows": 0, "max_duration": 0.0}
+
+    lost_rows = 0
+    max_duration = 0.0
+    segment_start = None
+    segment_last = None
+    for row in rows[first_seen:]:
+        row_time = to_float(row.get("time_sec", ""))
+        if row.get("state") == "LOST":
+            lost_rows += 1
+            if segment_start is None:
+                segment_start = row_time
+            segment_last = row_time
+            continue
+
+        if segment_start is not None:
+            if segment_start == segment_start and segment_last == segment_last:
+                max_duration = max(max_duration, max(0.0, segment_last - segment_start))
+            segment_start = None
+            segment_last = None
+
+    if segment_start is not None and segment_start == segment_start and segment_last == segment_last:
+        max_duration = max(max_duration, max(0.0, segment_last - segment_start))
+
+    return {"lost": lost_rows > 0, "rows": lost_rows, "max_duration": max_duration}
+
+
 def score_latest():
     command = f"{ROS_SETUP} && ros2 run vision_tracking score_experiment"
     subprocess.run(["/bin/bash", "-lc", command], check=False)
 
 
 def start_pose_is_reasonable(max_xy, min_z, max_z):
-    values = read_local_position("/fmu/out/vehicle_local_position_v1")
+    values = {}
+    for _ in range(3):
+        values = read_local_position("/fmu/out/vehicle_local_position_v1")
+        if values:
+            break
+        time.sleep(1.0)
     if not values:
-        values = read_local_position("/fmu/out/vehicle_local_position")
+        for _ in range(3):
+            values = read_local_position("/fmu/out/vehicle_local_position")
+            if values:
+                break
+            time.sleep(1.0)
     if not values:
         print("invalid trial: could not read vehicle_local_position")
         return False
@@ -378,7 +634,7 @@ def start_pose_is_reasonable(max_xy, min_z, max_z):
 
 
 def read_local_position(topic):
-    command = f"{ROS_SETUP} && timeout 5 ros2 topic echo --once {topic}"
+    command = f"{ROS_SETUP} && timeout 8 ros2 topic echo --once --qos-reliability best_effort {topic}"
     result = subprocess.run(
         ["/bin/bash", "-lc", command],
         stdout=subprocess.PIPE,

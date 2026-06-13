@@ -8,6 +8,7 @@ from geometry_msgs.msg import Twist
 from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleAttitude, VehicleCommand, VehicleLocalPosition, VehicleStatus
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import Bool
 
 
 CMD_TOPIC = "/vision/cmd_velocity"
@@ -30,6 +31,9 @@ class Px4VisualOffboard(Node):
         self.declare_parameter("lateral_sign", 1.0)
         self.declare_parameter("forward_yaw_offset_deg", 0.0)
         self.declare_parameter("allow_reverse", False)
+        self.declare_parameter("hold_after_capture", True)
+        self.declare_parameter("capture_hold_mode_delay_sec", 2.0)
+        self.declare_parameter("yaw_only_velocity_transform", True)
 
         self.auto_offboard = bool(self.get_parameter("auto_offboard").value)
         self.auto_arm = bool(self.get_parameter("auto_arm").value)
@@ -44,6 +48,9 @@ class Px4VisualOffboard(Node):
         self.lateral_sign = float(self.get_parameter("lateral_sign").value)
         self.forward_yaw_offset = math.radians(float(self.get_parameter("forward_yaw_offset_deg").value))
         self.allow_reverse = bool(self.get_parameter("allow_reverse").value)
+        self.hold_after_capture = bool(self.get_parameter("hold_after_capture").value)
+        self.capture_hold_mode_delay_sec = float(self.get_parameter("capture_hold_mode_delay_sec").value)
+        self.yaw_only_velocity_transform = bool(self.get_parameter("yaw_only_velocity_transform").value)
 
         px4_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -69,13 +76,26 @@ class Px4VisualOffboard(Node):
         )
 
         self.cmd_sub = self.create_subscription(Twist, CMD_TOPIC, self.cmd_callback, 10)
+        self.captured_sub = self.create_subscription(Bool, "/vision/captured", self.captured_callback, 10)
         self.status_sub = self.create_subscription(
+            VehicleStatus,
+            "/fmu/out/vehicle_status_v4",
+            self.status_callback,
+            px4_qos,
+        )
+        self.legacy_status_sub = self.create_subscription(
             VehicleStatus,
             "/fmu/out/vehicle_status",
             self.status_callback,
             px4_qos,
         )
         self.local_position_sub = self.create_subscription(
+            VehicleLocalPosition,
+            "/fmu/out/vehicle_local_position_v1",
+            self.local_position_callback,
+            px4_qos,
+        )
+        self.legacy_local_position_sub = self.create_subscription(
             VehicleLocalPosition,
             "/fmu/out/vehicle_local_position",
             self.local_position_callback,
@@ -97,14 +117,28 @@ class Px4VisualOffboard(Node):
         self.start_time = time.monotonic()
         self.last_mode_request_time = 0.0
         self.arm_sent = False
+        self.captured = False
+        self.capture_time = None
 
         self.timer = self.create_timer(0.05, self.timer_callback)
         self.get_logger().info(f"Subscribed to {CMD_TOPIC}")
         self.get_logger().info("Publishing low-speed PX4 Offboard velocity setpoints")
 
     def cmd_callback(self, msg):
+        if self.captured and self.hold_after_capture:
+            self.latest_cmd = Twist()
+            self.last_cmd_time = time.monotonic()
+            return
         self.latest_cmd = msg
         self.last_cmd_time = time.monotonic()
+
+    def captured_callback(self, msg):
+        if bool(msg.data) and not self.captured:
+            self.get_logger().info("Capture received; commanding zero velocity before Hold/Loiter")
+            self.captured = True
+            self.capture_time = time.monotonic()
+            self.latest_cmd = Twist()
+            self.last_cmd_time = time.monotonic()
 
     def status_callback(self, msg):
         self.nav_state = msg.nav_state
@@ -123,6 +157,19 @@ class Px4VisualOffboard(Node):
         self.publish_trajectory_setpoint(now_us)
 
         if time.monotonic() - self.start_time < self.start_delay_sec:
+            return
+
+        if self.should_request_hold_after_capture():
+            self.publish_vehicle_command(
+                VehicleCommand.VEHICLE_CMD_DO_SET_MODE,
+                param1=1.0,
+                param2=4.0,
+                param3=3.0,
+            )
+            self.last_mode_request_time = time.monotonic()
+            self.get_logger().info(
+                f"Requested AUTO.LOITER/Hold after capture (nav_state={self.nav_state}, arming_state={self.arming_state})"
+            )
             return
 
         if self.auto_offboard and self.should_request_offboard():
@@ -145,7 +192,25 @@ class Px4VisualOffboard(Node):
             self.get_logger().info("Requested arm")
 
     def should_request_offboard(self):
+        if self.captured and self.hold_after_capture:
+            return False
+
         if self.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD:
+            return False
+
+        if time.monotonic() - self.last_mode_request_time < self.mode_retry_sec:
+            return False
+
+        return True
+
+    def should_request_hold_after_capture(self):
+        if not self.captured or not self.hold_after_capture:
+            return False
+
+        if self.capture_time is None:
+            return False
+
+        if time.monotonic() - self.capture_time < self.capture_hold_mode_delay_sec:
             return False
 
         if time.monotonic() - self.last_mode_request_time < self.mode_retry_sec:
@@ -170,13 +235,16 @@ class Px4VisualOffboard(Node):
         body_forward *= self.forward_sign
         body_right *= self.lateral_sign
 
-        # PX4 VehicleAttitude.q rotates FRD body vectors into NED.
-        # The visual command uses forward/right/up, so convert up to FRD down first.
-        north, east, down = self.rotate_body_frd_to_ned(
-            body_forward,
-            body_right,
-            -vertical_up,
-        )
+        if self.yaw_only_velocity_transform:
+            north, east, down = self.rotate_body_yaw_to_ned(body_forward, body_right, vertical_up)
+        else:
+            # PX4 VehicleAttitude.q rotates FRD body vectors into NED.
+            # The visual command uses forward/right/up, so convert up to FRD down first.
+            north, east, down = self.rotate_body_frd_to_ned(
+                body_forward,
+                body_right,
+                -vertical_up,
+            )
 
         msg = TrajectorySetpoint()
         msg.timestamp = timestamp
@@ -202,6 +270,9 @@ class Px4VisualOffboard(Node):
         )
 
     def get_safe_body_command(self):
+        if self.captured and self.hold_after_capture:
+            return 0.0, 0.0, 0.0, 0.0
+
         if self.last_cmd_time is None:
             return 0.0, 0.0, 0.0, 0.0
 
@@ -250,6 +321,15 @@ class Px4VisualOffboard(Node):
         rz = z + w * tz + (qx * ty - qy * tx)
         return rx, ry, rz
 
+    def rotate_body_yaw_to_ned(self, forward, right, vertical_up):
+        heading = self.heading + self.forward_yaw_offset
+        cos_yaw = math.cos(heading)
+        sin_yaw = math.sin(heading)
+        north = forward * cos_yaw - right * sin_yaw
+        east = forward * sin_yaw + right * cos_yaw
+        down = -vertical_up
+        return north, east, down
+
 
 def main():
     rclpy.init()
@@ -261,7 +341,8 @@ def main():
         pass
 
     node.destroy_node()
-    rclpy.shutdown()
+    if rclpy.ok():
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":

@@ -46,6 +46,8 @@ def main():
 
     start_time = time.monotonic()
     next_time = start_time
+    x, y, z = target_pose(args, 0.0, forward, lateral)
+    pose_file.write_text(f"{time.time():.9f},{x:.6f},{y:.6f},{z:.6f}\n")
 
     try:
         while True:
@@ -56,8 +58,8 @@ def main():
                 break
 
             x, y, z = target_pose(args, t, forward, lateral)
-            set_pose(args.world, args.name, x, y, z)
             pose_file.write_text(f"{time.time():.9f},{x:.6f},{y:.6f},{z:.6f}\n")
+            set_pose(args.world, args.name, x, y, z)
 
             next_time += args.dt
             sleep_time = max(0.0, next_time - time.monotonic())
@@ -139,6 +141,7 @@ def target_pose(args, t, forward, lateral):
         theta = along / arc_radius
         along = arc_radius * math.sin(theta)
         side = direction * arc_radius * (1.0 - math.cos(theta))
+        z_offset = args.z_amp * math.sin(2.0 * math.pi * t / max(args.z_period, 0.1))
 
     if args.mode == "s_curve":
         side = args.s_amp_y * math.sin(2.0 * math.pi * t / max(args.s_period, 0.1))

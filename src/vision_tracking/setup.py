@@ -30,6 +30,7 @@ setup(
             'image_viewer = vision_tracking.image_viewer:main',
             'color_tracker = vision_tracking.color_tracker:main',
             'attitude_pn_bearing_servo = vision_tracking.attitude_pn_bearing_servo:main',
+            'los_rate_bearing_servo = vision_tracking.los_rate_bearing_servo:main',
             'px4_visual_offboard = vision_tracking.px4_visual_offboard:main',
             'experiment_logger = vision_tracking.experiment_logger:main',
             'plot_experiment = vision_tracking.plot_experiment:main',

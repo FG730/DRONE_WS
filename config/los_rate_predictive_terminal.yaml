@@ -1,0 +1,67 @@
+profile: los_rate_predictive_terminal
+purpose: predictive_terminal_guidance_for_planar_s_curve
+description: >
+  Upgraded LOS-rate bearing guidance with a predictive terminal layer. The
+  terminal layer predicts short-horizon LOS angle using LOS angular rate,
+  keeps enough closing speed under lateral pass-by risk, and increases lateral
+  interception priority without over-commanding sideways motion.
+
+comparison_role: improved_guidance_without_mpc_control
+
+validated_experiment: tune_s_curve_planar_predictive_clean_3_valid.csv
+validated_result:
+  target_mode: s_curve
+  target_speed_m_s: 3.0
+  capture_radius_m: 0.8
+  captured: true
+  valid_continuous_capture: true
+  lost_before_capture: false
+  capture_target_time_sec: 47.899866
+  capture_distance_m: 0.653634
+  score_lower_is_better: 68.372
+
+target_reference:
+  planar_s_curve:
+    target_mode: s_curve
+    target_speed_m_s: 3.0
+    start_x_m: 8.0
+    start_y_m: 1.0
+    start_z_m: 4.0
+    heading_deg: 0.0
+    s_amp_y_m: 1.5
+    s_period_sec: 6.0
+    z_amp_m: 0.0
+    z_period_sec: 8.0
+    target_dt_sec: 0.02
+
+controller_profile: los_rate_predictive
+
+predictive_terminal:
+  enable_predictive_terminal: true
+  predict_time_sec: 0.25
+  predict_start_area_px: 15000.0
+  predict_full_area_px: 36000.0
+  predict_rate_trigger_rad_s: 0.75
+  predict_rate_full_rad_s: 1.80
+  predict_center_x_rad: 0.20
+  predict_center_y_rad: 0.16
+  predict_max_angle_rad: 0.78
+  predict_forward_scale: 0.20
+  predict_lateral_boost: 1.45
+  predict_vertical_boost: 1.10
+  predict_yaw_scale: 1.00
+  edge_forward_scale: 0.25
+  edge_correction_scale: 1.65
+  max_lateral_speed: 4.5
+  max_yaw_rate: 0.70
+  max_lateral_accel: 7.0
+  max_yaw_accel: 2.0
+
+expected_log_state:
+  terminal_predictive_state: LOS_PREDICT_TERMINAL
+
+comparison_note: >
+  Use this profile as the final non-MPC improved guidance scheme. Compare it
+  against pixel_error_ibvs_arc3d_baseline.yaml and, later, the MPC-based full
+  guidance-control scheme. Success criterion remains strict: captured=true and
+  lost_before_capture=false.

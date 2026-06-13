@@ -5,6 +5,7 @@ import numpy as np
 import rclpy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Point
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 
@@ -15,11 +16,13 @@ IMAGE_TOPIC = "/world/default/model/x500_mono_cam_0/link/camera_link/sensor/came
 class ColorTracker(Node):
     def __init__(self):
         super().__init__("color_tracker")
+        self.declare_parameter("display", True)
+        self.display = bool(self.get_parameter("display").value)
         self.bridge = CvBridge()
         self.target_pub = self.create_publisher(Point, "/vision/target_center", 10)
         self.error_pub = self.create_publisher(Point, "/vision/target_error", 10)
         self.image_sub = self.create_subscription(Image, IMAGE_TOPIC, self.image_callback, 10)
-        self.get_logger().info(f"Tracking red target from {IMAGE_TOPIC}")
+        self.get_logger().info(f"Tracking red target from {IMAGE_TOPIC}, display={self.display}")
 
     def image_callback(self, msg):
         frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
@@ -67,30 +70,32 @@ class ColorTracker(Node):
                     error.z = float(area)
                     self.error_pub.publish(error)
 
-                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                    cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
-                    cv2.line(frame, (image_center_x, image_center_y), (cx, cy), (0, 255, 255), 2)
-                    cv2.putText(
-                        frame,
-                        f"target ({cx}, {cy}) err=({error_x}, {error_y}) area={area:.0f}",
-                        (x, max(20, y - 10)),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6,
-                        (0, 255, 0),
-                        2,
-                    )
+                    if self.display:
+                        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                        cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
+                        cv2.line(frame, (image_center_x, image_center_y), (cx, cy), (0, 255, 255), 2)
+                        cv2.putText(
+                            frame,
+                            f"target ({cx}, {cy}) err=({error_x}, {error_y}) area={area:.0f}",
+                            (x, max(20, y - 10)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.6,
+                            (0, 255, 0),
+                            2,
+                        )
 
-        cv2.drawMarker(
-            frame,
-            (image_center_x, image_center_y),
-            (255, 255, 0),
-            markerType=cv2.MARKER_CROSS,
-            markerSize=28,
-            thickness=2,
-        )
-        cv2.imshow("color_tracker", frame)
-        cv2.imshow("red_mask", mask)
-        cv2.waitKey(1)
+        if self.display:
+            cv2.drawMarker(
+                frame,
+                (image_center_x, image_center_y),
+                (255, 255, 0),
+                markerType=cv2.MARKER_CROSS,
+                markerSize=28,
+                thickness=2,
+            )
+            cv2.imshow("color_tracker", frame)
+            cv2.imshow("red_mask", mask)
+            cv2.waitKey(1)
 
 
 def main():
@@ -99,12 +104,14 @@ def main():
 
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
 
     node.destroy_node()
-    cv2.destroyAllWindows()
-    rclpy.shutdown()
+    if node.display:
+        cv2.destroyAllWindows()
+    if rclpy.ok():
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":

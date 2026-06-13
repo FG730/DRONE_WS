@@ -1,0 +1,101 @@
+profile: pixel_error_ibvs_arc3d_baseline
+purpose: historical_baseline_for_comparison
+description: >
+  First-generation image-plane pixel-error guidance family. This baseline uses
+  attitude-compensated pixel error and pixel-error rate, not LOS-rate guidance.
+  It was useful for straight/arc/3D-arc tests, but did not pass the later strict
+  strong S-curve continuous-visibility requirement.
+
+baseline:
+  name: fixed_pixel_error_ibvs
+  node: attitude_pn_bearing_servo
+  note: >
+    Fixed first-generation pixel-error / IBVS baseline. The same parameters
+    should be used for straight, arc, 3D arc, and S-curve tests because a real
+    interceptor cannot retune gains according to the target maneuver.
+  controller:
+    base_forward_speed: 7.0
+    max_forward_speed: 8.0
+    min_forward_scale: 0.48
+    kp_lateral: 0.0120
+    kd_lateral: 0.0025
+    kp_vertical: -0.0130
+    kd_vertical: -0.0013
+    max_lateral_speed: 2.8
+    max_vertical_speed: 2.3
+    max_yaw_rate: 0.42
+    center_x_px: 40.0
+    center_y_px: 55.0
+    slow_x_px: 360.0
+    slow_y_px: 220.0
+    rate_slow_px_s: 1500.0
+    pitch_pixel_gain: 0.85
+    roll_pixel_gain: 0.80
+    pitch_sign: 1.0
+    roll_sign: 1.0
+    vertical_error_alpha: 0.55
+    lateral_error_alpha: 0.45
+    vertical_deadband_px: 2.0
+    lateral_deadband_px: 5.0
+    max_vertical_accel: 3.0
+    max_lateral_accel: 3.0
+    enable_vertical_area_schedule: true
+    far_area_px: 2500.0
+    near_area_px: 22000.0
+    near_vertical_gain_scale: 0.65
+    near_vertical_speed_scale: 0.65
+    near_vertical_accel_scale: 0.65
+    enable_terminal_dash: true
+    terminal_area_px: 18000.0
+    terminal_min_forward_scale: 0.72
+    terminal_lateral_scale: 0.35
+    terminal_vertical_scale: 0.35
+    terminal_yaw_scale: 0.30
+    max_virtual_offset_px: 220.0
+
+target_reference:
+  straight:
+    target_mode: straight
+    target_speed_m_s: 3.0
+    start_x_m: 8.0
+    start_y_m: 1.0
+    start_z_m: 4.0
+    heading_deg: 0.0
+    target_dt_sec: 0.02
+  arc:
+    target_mode: arc
+    target_speed_m_s: 3.0
+    start_x_m: 8.0
+    start_y_m: 1.0
+    start_z_m: 4.0
+    heading_deg: 0.0
+    arc_radius_m: 60.0
+    arc_direction: left
+    target_dt_sec: 0.02
+  s_curve_failed_reference:
+    target_mode: s_curve
+    target_speed_m_s: 3.0
+    start_x_m: 8.0
+    start_y_m: 1.0
+    start_z_m: 4.0
+    heading_deg: 0.0
+    s_amp_y_m: 1.5
+    s_period_sec: 6.0
+    z_amp_m: 0.4
+    z_period_sec: 8.0
+    target_dt_sec: 0.02
+
+offboard_reference:
+  node: px4_visual_offboard
+  max_forward_speed_arc_balanced: 8.0
+  max_lateral_speed_arc_balanced: 2.8
+  max_vertical_speed_arc_balanced: 2.2
+  max_yaw_rate_arc_balanced: 0.42
+  forward_sign: 1.0
+  lateral_sign: 1.0
+  yaw_only_velocity_transform_current_default: true
+
+comparison_note: >
+  Use this file as the baseline IBVS/pixel-error method in reports. Compare it
+  against los_rate_predictive_terminal.yaml for the improved guidance method,
+  and later against the MPC-based full guidance-control scheme.
