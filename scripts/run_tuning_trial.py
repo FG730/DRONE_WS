@@ -220,7 +220,7 @@ def main():
     parser.add_argument("--pre-target-delay", type=float, default=5.0)
     parser.add_argument("--post-capture-delay", type=float, default=5.0)
     parser.add_argument("--capture-radius", type=float, default=1.2)
-    parser.add_argument("--target-mode", choices=["straight", "arc", "s_curve"], default="straight")
+    parser.add_argument("--target-mode", choices=["straight", "arc", "s_curve", "random_maneuver"], default="straight")
     parser.add_argument(
         "--controller-profile",
         choices=["trial7", "arc_fast", "arc_balanced", "los_rate", "los_rate_predictive"],
@@ -232,33 +232,84 @@ def main():
     parser.add_argument("--start-z", type=float, default=4.0)
     parser.add_argument("--heading-deg", type=float, default=0.0)
     parser.add_argument("--target-dt", type=float, default=0.02)
+    parser.add_argument("--target-start-hold-sec", type=float, default=0.0)
     parser.add_argument("--arc-radius", type=float, default=60.0)
     parser.add_argument("--arc-direction", choices=["left", "right"], default="left")
     parser.add_argument("--s-amp-y", type=float, default=1.5)
     parser.add_argument("--s-period", type=float, default=6.0)
     parser.add_argument("--z-amp", type=float, default=0.25)
     parser.add_argument("--z-period", type=float, default=9.0)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--random-speed-amp", type=float, default=0.8)
+    parser.add_argument("--random-lateral-amp", type=float, default=2.0)
+    parser.add_argument("--random-z-amp", type=float, default=0.6)
+    parser.add_argument("--random-turn-amp-deg", type=float, default=18.0)
+    parser.add_argument("--random-min-period", type=float, default=3.0)
+    parser.add_argument("--random-max-period", type=float, default=9.0)
+    parser.add_argument("--random-terms", type=int, default=4)
     parser.add_argument("--max-start-z", type=float, default=4.5)
     parser.add_argument("--min-start-z", type=float, default=2.0)
     parser.add_argument("--max-start-xy", type=float, default=30.0)
+    parser.add_argument("--return-to-origin", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--return-altitude", type=float, default=3.0)
+    parser.add_argument("--return-timeout", type=float, default=45.0)
     parser.add_argument("--no-bridge", action="store_true")
     parser.add_argument("--no-color-tracker", action="store_true")
+    parser.add_argument(
+        "--with-transformer-predictor",
+        action="store_true",
+        help="Start the trained LOS Transformer predictor during the trial. It runs in parallel and does not control the UAV.",
+    )
+    parser.add_argument(
+        "--enable-transformer-guidance",
+        action="store_true",
+        help="Fuse Transformer-predicted LOS into the LOS-rate controller with a small feed-forward weight.",
+    )
+    parser.add_argument("--transformer-alpha", type=float, default=0.20)
+    parser.add_argument("--transformer-alpha-x", type=float, default=0.0)
+    parser.add_argument("--transformer-alpha-y", type=float, default=0.12)
+    parser.add_argument("--transformer-start-area-px", type=float, default=8000.0)
+    parser.add_argument("--transformer-stale-sec", type=float, default=0.30)
+    parser.add_argument("--transformer-max-delta-rad", type=float, default=0.20)
+    parser.add_argument("--transformer-guidance-mode", choices=["angle", "velocity"], default="angle")
+    parser.add_argument("--transformer-horizon-sec", type=float, default=0.30)
+    parser.add_argument("--transformer-velocity-gain-lateral", type=float, default=1.0)
+    parser.add_argument("--transformer-velocity-gain-vertical", type=float, default=1.0)
+    parser.add_argument("--no-transformer-consistency-gate", action="store_true")
+    parser.add_argument("--predict-forward-scale", type=float, default=None)
+    parser.add_argument("--predict-lateral-boost", type=float, default=None)
+    parser.add_argument("--predict-vertical-boost", type=float, default=None)
+    parser.add_argument("--predict-yaw-scale", type=float, default=None)
+    parser.add_argument("--max-lateral-speed-override", type=float, default=None)
+    parser.add_argument("--max-yaw-rate-override", type=float, default=None)
+    parser.add_argument(
+        "--transformer-model-path",
+        default="~/drone_ws/models/los_delta_transformer_v2/best.pt",
+        help="Model checkpoint used when --with-transformer-predictor is enabled.",
+    )
     parser.add_argument(
         "--allow-lost-before-capture",
         action="store_true",
         help="Allow a trial to count even if the target is lost after first visual acquisition.",
     )
     args = parser.parse_args()
+    if args.enable_transformer_guidance:
+        args.with_transformer_predictor = True
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     NODE_LOG_DIR.mkdir(parents=True, exist_ok=True)
     prefix = f"tune_{args.name}"
     processes = []
+    ran_trial = False
+    initial_heading = 0.0
+    trial_start_wall_time = time.time()
 
     try:
         if not start_pose_is_reasonable(args.max_start_xy, args.min_start_z, args.max_start_z):
             print("invalid trial: vehicle is not near the expected start pose. Reset PX4/Gazebo or reposition before tuning.")
             return
+        initial_heading = read_initial_heading()
+        print(f"initial heading for return: {initial_heading:.3f} rad")
 
         if not args.no_bridge:
             processes.append(
@@ -285,11 +336,22 @@ def main():
             start_process(
                 "controller",
                 f"{ROS_SETUP} && ros2 run vision_tracking {controller_node(args.controller_profile)} --ros-args "
-                + " ".join(controller_params(args.controller_profile)),
+                + " ".join(controller_params(args.controller_profile, args)),
                 prefix,
             )
         )
         time.sleep(1.0)
+
+        if args.with_transformer_predictor:
+            processes.append(
+                start_process(
+                    "transformer_predictor",
+                    f"{ROS_SETUP} && ros2 run vision_tracking los_transformer_predictor --ros-args "
+                    f"-p model_path:={args.transformer_model_path}",
+                    prefix,
+                )
+            )
+            time.sleep(1.0)
 
         reset_pose_file()
         time.sleep(args.pre_target_delay)
@@ -305,12 +367,21 @@ def main():
                 f"--start-z {args.start_z} "
                 f"--heading-deg {args.heading_deg} "
                 f"--dt {args.target_dt} "
+                f"--start-hold-sec {args.target_start_hold_sec} "
                 f"--arc-radius {args.arc_radius} "
                 f"--arc-direction {args.arc_direction} "
                 f"--s-amp-y {args.s_amp_y} "
                 f"--s-period {args.s_period} "
                 f"--z-amp {args.z_amp} "
-                f"--z-period {args.z_period}",
+                f"--z-period {args.z_period} "
+                f"--seed {args.seed} "
+                f"--random-speed-amp {args.random_speed_amp} "
+                f"--random-lateral-amp {args.random_lateral_amp} "
+                f"--random-z-amp {args.random_z_amp} "
+                f"--random-turn-amp-deg {args.random_turn_amp_deg} "
+                f"--random-min-period {args.random_min_period} "
+                f"--random-max-period {args.random_max_period} "
+                f"--random-terms {args.random_terms}",
                 prefix,
             )
         )
@@ -339,9 +410,9 @@ def main():
                 "offboard",
                 f"{ROS_SETUP} && ros2 run vision_tracking px4_visual_offboard --ros-args "
                 f"-p max_forward_speed:={offboard_limit(args.controller_profile, 'forward')} "
-                f"-p max_lateral_speed:={offboard_limit(args.controller_profile, 'lateral')} "
+                f"-p max_lateral_speed:={offboard_lateral_limit(args)} "
                 f"-p max_vertical_speed:={offboard_limit(args.controller_profile, 'vertical')} "
-                f"-p max_yaw_rate:={offboard_limit(args.controller_profile, 'yaw')} "
+                f"-p max_yaw_rate:={offboard_yaw_limit(args)} "
                 "-p forward_sign:=1.0 "
                 "-p lateral_sign:=1.0 "
                 "-p mode_retry_sec:=1.0 "
@@ -351,7 +422,8 @@ def main():
             )
         )
 
-        csv_path = wait_for_csv(prefix, timeout=10.0)
+        csv_path = wait_for_csv(prefix, timeout=10.0, newer_than=trial_start_wall_time)
+        ran_trial = True
         print(f"CSV: {csv_path}")
         result = wait_for_trial_result(
             csv_path,
@@ -366,6 +438,8 @@ def main():
     finally:
         stop_processes(processes)
         cleanup_target()
+        if ran_trial and args.return_to_origin:
+            return_to_origin(args, prefix, initial_heading)
 
     score_latest()
 
@@ -383,16 +457,49 @@ def start_process(name, command, prefix):
     return name, proc, log_file
 
 
-def controller_params(profile):
+def controller_params(profile, args=None):
     if profile == "los_rate_predictive":
-        return LOS_RATE_PREDICTIVE_CONTROLLER_PARAMS
-    if profile == "los_rate":
-        return LOS_RATE_CONTROLLER_PARAMS
-    if profile == "arc_balanced":
-        return ARC_BALANCED_CONTROLLER_PARAMS
-    if profile == "arc_fast":
-        return ARC_FAST_CONTROLLER_PARAMS
-    return CONTROLLER_PARAMS
+        params = list(LOS_RATE_PREDICTIVE_CONTROLLER_PARAMS)
+    elif profile == "los_rate":
+        params = list(LOS_RATE_CONTROLLER_PARAMS)
+    elif profile == "arc_balanced":
+        params = list(ARC_BALANCED_CONTROLLER_PARAMS)
+    elif profile == "arc_fast":
+        params = list(ARC_FAST_CONTROLLER_PARAMS)
+    else:
+        params = list(CONTROLLER_PARAMS)
+
+    if args is not None and args.enable_transformer_guidance and profile in ("los_rate", "los_rate_predictive"):
+        params.extend(
+            [
+                "-p enable_transformer_guidance:=true",
+                f"-p transformer_alpha:={args.transformer_alpha}",
+                f"-p transformer_alpha_x:={args.transformer_alpha_x}",
+                f"-p transformer_alpha_y:={args.transformer_alpha_y}",
+                f"-p transformer_start_area_px:={args.transformer_start_area_px}",
+                f"-p transformer_stale_sec:={args.transformer_stale_sec}",
+                f"-p transformer_max_delta_rad:={args.transformer_max_delta_rad}",
+                f"-p transformer_guidance_mode:={args.transformer_guidance_mode}",
+                f"-p transformer_horizon_sec:={args.transformer_horizon_sec}",
+                f"-p transformer_velocity_gain_lateral:={args.transformer_velocity_gain_lateral}",
+                f"-p transformer_velocity_gain_vertical:={args.transformer_velocity_gain_vertical}",
+                f"-p transformer_consistency_gate:={str(not args.no_transformer_consistency_gate).lower()}",
+            ]
+        )
+    if args is not None and profile in ("los_rate", "los_rate_predictive"):
+        if args.predict_forward_scale is not None:
+            params.append(f"-p predict_forward_scale:={args.predict_forward_scale}")
+        if args.predict_lateral_boost is not None:
+            params.append(f"-p predict_lateral_boost:={args.predict_lateral_boost}")
+        if args.predict_vertical_boost is not None:
+            params.append(f"-p predict_vertical_boost:={args.predict_vertical_boost}")
+        if args.predict_yaw_scale is not None:
+            params.append(f"-p predict_yaw_scale:={args.predict_yaw_scale}")
+        if args.max_lateral_speed_override is not None:
+            params.append(f"-p max_lateral_speed:={args.max_lateral_speed_override}")
+        if args.max_yaw_rate_override is not None:
+            params.append(f"-p max_yaw_rate:={args.max_yaw_rate_override}")
+    return params
 
 
 def controller_node(profile):
@@ -435,6 +542,18 @@ def offboard_limit(profile, axis):
     }[axis]
 
 
+def offboard_lateral_limit(args):
+    if args.max_lateral_speed_override is not None:
+        return args.max_lateral_speed_override
+    return offboard_limit(args.controller_profile, "lateral")
+
+
+def offboard_yaw_limit(args):
+    if args.max_yaw_rate_override is not None:
+        return args.max_yaw_rate_override
+    return offboard_limit(args.controller_profile, "yaw")
+
+
 def stop_processes(processes):
     for name, proc, log_file in reversed(processes):
         if proc.poll() is None:
@@ -450,11 +569,15 @@ def stop_processes(processes):
         log_file.close()
 
 
-def wait_for_csv(prefix, timeout):
+def wait_for_csv(prefix, timeout, newer_than=0.0):
     deadline = time.time() + timeout
     pattern = str(LOG_DIR / f"{prefix}_*.csv")
     while time.time() < deadline:
-        matches = glob.glob(pattern)
+        matches = [
+            path
+            for path in glob.glob(pattern)
+            if os.path.getmtime(path) >= newer_than
+        ]
         if matches:
             return Path(max(matches, key=os.path.getmtime))
         time.sleep(0.2)
@@ -485,6 +608,27 @@ def cleanup_target():
     ]
     subprocess.run(remove_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
     reset_pose_file()
+
+
+def return_to_origin(args, prefix, initial_heading):
+    log_path = NODE_LOG_DIR / f"{prefix}_return_to_origin.log"
+    command = (
+        f"{ROS_SETUP} && ros2 run vision_tracking px4_return_to_origin --ros-args "
+        "-p target_x:=0.0 "
+        "-p target_y:=0.0 "
+        f"-p target_altitude:={args.return_altitude} "
+        f"-p target_yaw:={initial_heading} "
+        f"-p timeout_sec:={args.return_timeout}"
+    )
+    print(f"returning to origin, log={log_path}")
+    with open(log_path, "w") as log_file:
+        result = subprocess.run(
+            ["/bin/bash", "-lc", command],
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+    print(f"return_to_origin exited with code {result.returncode}")
 
 
 def wait_for_fresh_target_pose(timeout):
@@ -631,6 +775,20 @@ def start_pose_is_reasonable(max_xy, min_z, max_z):
     horizontal = (px4_x * px4_x + px4_y * px4_y) ** 0.5
     print(f"start pose check: px4_xy=({px4_x:.2f},{px4_y:.2f}), gazebo_z={gazebo_z:.2f}, horizontal={horizontal:.2f}")
     return min_z <= gazebo_z <= max_z and horizontal <= max_xy
+
+
+def read_initial_heading():
+    values = read_local_position("/fmu/out/vehicle_local_position_v1")
+    if not values:
+        values = read_local_position("/fmu/out/vehicle_local_position")
+    if not values:
+        return 0.0
+    if values.get("heading_good_for_control") is False:
+        return 0.0
+    try:
+        return float(values.get("heading", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def read_local_position(topic):

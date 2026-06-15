@@ -31,10 +31,13 @@ setup(
             'color_tracker = vision_tracking.color_tracker:main',
             'attitude_pn_bearing_servo = vision_tracking.attitude_pn_bearing_servo:main',
             'los_rate_bearing_servo = vision_tracking.los_rate_bearing_servo:main',
+            'los_transformer_predictor = vision_tracking.los_transformer_predictor:main',
             'px4_visual_offboard = vision_tracking.px4_visual_offboard:main',
+            'px4_return_to_origin = vision_tracking.px4_return_to_origin:main',
             'experiment_logger = vision_tracking.experiment_logger:main',
             'plot_experiment = vision_tracking.plot_experiment:main',
             'score_experiment = vision_tracking.score_experiment:main',
+            'build_transformer_dataset = vision_tracking.build_transformer_dataset:main',
         ],
     },
 )

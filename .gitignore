@@ -4,6 +4,8 @@ log/
 logs/
 plots/
 tuning_node_logs/
+datasets/
+models/
 
 __pycache__/
 *.py[cod]

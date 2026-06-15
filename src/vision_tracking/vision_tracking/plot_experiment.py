@@ -11,6 +11,7 @@ import numpy as np
 
 DEFAULT_LOG_DIR = Path.home() / "drone_ws" / "logs"
 DEFAULT_OUTPUT_DIR = Path.home() / "drone_ws" / "plots"
+MPS_TO_KMPH = 3.6
 
 
 def main():
@@ -30,6 +31,12 @@ def main():
         type=float,
         default=None,
         help="Capture radius line to draw on distance plot. Defaults to first captured distance if available.",
+    )
+    parser.add_argument(
+        "--speed-unit",
+        choices=["kmh", "mps"],
+        default="kmh",
+        help="Display linear command speeds in km/h or m/s. CSV values remain SI units.",
     )
     args = parser.parse_args()
 
@@ -65,7 +72,7 @@ def main():
 
     plot_distance(df, output_dir / f"{stem}_distance.png", capture_time, capture_radius)
     plot_pixel_errors(df, output_dir / f"{stem}_pixel_error.png", capture_time)
-    plot_commands(df, output_dir / f"{stem}_commands.png", capture_time)
+    plot_commands(df, output_dir / f"{stem}_commands.png", capture_time, args.speed_unit)
     plot_xy_trajectory(df, output_dir / f"{stem}_xy_trajectory.png", capture_time)
     plot_3d_trajectory(df, output_dir / f"{stem}_3d_trajectory.png", capture_time)
     plot_capture_state(df, output_dir / f"{stem}_capture_state.png", capture_time)
@@ -273,16 +280,18 @@ def plot_pixel_errors(df, path, capture_time):
     save(fig, path)
 
 
-def plot_commands(df, path, capture_time):
+def plot_commands(df, path, capture_time, speed_unit):
     fig, axes = plt.subplots(4, 1, figsize=(10, 8), sharex=True)
+    speed_scale = MPS_TO_KMPH if speed_unit == "kmh" else 1.0
+    speed_label = "km/h" if speed_unit == "kmh" else "m/s"
     command_cols = [
-        ("cmd_vx", "Forward vx (m/s)"),
-        ("cmd_vy", "Lateral vy (m/s)"),
-        ("cmd_vz", "Vertical vz (m/s)"),
-        ("cmd_yaw_rate", "Yaw rate (rad/s)"),
+        ("cmd_vx", f"Forward vx ({speed_label})", speed_scale),
+        ("cmd_vy", f"Lateral vy ({speed_label})", speed_scale),
+        ("cmd_vz", f"Vertical vz ({speed_label})", speed_scale),
+        ("cmd_yaw_rate", "Yaw rate (rad/s)", 1.0),
     ]
-    for ax, (col, label) in zip(axes, command_cols):
-        ax.plot(df["time_sec"], df[col], linewidth=1.6)
+    for ax, (col, label, scale) in zip(axes, command_cols):
+        ax.plot(df["time_sec"], df[col] * scale, linewidth=1.6)
         add_capture_line(ax, capture_time)
         ax.set_ylabel(label)
         ax.grid(True, alpha=0.3)

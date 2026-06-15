@@ -78,6 +78,19 @@ class LosRateBearingServo(Node):
         self.declare_parameter("predict_lateral_boost", 1.55)
         self.declare_parameter("predict_vertical_boost", 1.10)
         self.declare_parameter("predict_yaw_scale", 0.65)
+        self.declare_parameter("enable_transformer_guidance", False)
+        self.declare_parameter("transformer_alpha", 0.20)
+        self.declare_parameter("transformer_alpha_x", 0.0)
+        self.declare_parameter("transformer_alpha_y", 0.12)
+        self.declare_parameter("transformer_start_area_px", 8000.0)
+        self.declare_parameter("transformer_stale_sec", 0.30)
+        self.declare_parameter("transformer_max_delta_rad", 0.20)
+        self.declare_parameter("transformer_consistency_gate", True)
+        self.declare_parameter("transformer_rate_deadband_rad_s", 0.03)
+        self.declare_parameter("transformer_guidance_mode", "angle")
+        self.declare_parameter("transformer_horizon_sec", 0.30)
+        self.declare_parameter("transformer_velocity_gain_lateral", 1.0)
+        self.declare_parameter("transformer_velocity_gain_vertical", 1.0)
 
         self.declare_parameter("image_width", 1280.0)
         self.declare_parameter("image_height", 960.0)
@@ -147,6 +160,19 @@ class LosRateBearingServo(Node):
         self.predict_lateral_boost = float(self.get_parameter("predict_lateral_boost").value)
         self.predict_vertical_boost = float(self.get_parameter("predict_vertical_boost").value)
         self.predict_yaw_scale = float(self.get_parameter("predict_yaw_scale").value)
+        self.enable_transformer_guidance = bool(self.get_parameter("enable_transformer_guidance").value)
+        self.transformer_alpha = float(self.get_parameter("transformer_alpha").value)
+        self.transformer_alpha_x = float(self.get_parameter("transformer_alpha_x").value)
+        self.transformer_alpha_y = float(self.get_parameter("transformer_alpha_y").value)
+        self.transformer_start_area_px = float(self.get_parameter("transformer_start_area_px").value)
+        self.transformer_stale_sec = float(self.get_parameter("transformer_stale_sec").value)
+        self.transformer_max_delta_rad = float(self.get_parameter("transformer_max_delta_rad").value)
+        self.transformer_consistency_gate = bool(self.get_parameter("transformer_consistency_gate").value)
+        self.transformer_rate_deadband_rad_s = float(self.get_parameter("transformer_rate_deadband_rad_s").value)
+        self.transformer_guidance_mode = str(self.get_parameter("transformer_guidance_mode").value)
+        self.transformer_horizon_sec = float(self.get_parameter("transformer_horizon_sec").value)
+        self.transformer_velocity_gain_lateral = float(self.get_parameter("transformer_velocity_gain_lateral").value)
+        self.transformer_velocity_gain_vertical = float(self.get_parameter("transformer_velocity_gain_vertical").value)
 
         self.image_width = float(self.get_parameter("image_width").value)
         self.image_height = float(self.get_parameter("image_height").value)
@@ -179,6 +205,8 @@ class LosRateBearingServo(Node):
         self.last_cmd_z = 0.0
         self.last_cmd_yaw = 0.0
         self.last_target_time = None
+        self.latest_transformer_los = None
+        self.latest_transformer_time = None
         self.captured = False
         self.state = "SEARCH"
 
@@ -193,6 +221,7 @@ class LosRateBearingServo(Node):
         self.state_pub = self.create_publisher(String, "/vision/tracking_state", 10)
         self.virtual_error_pub = self.create_publisher(Point, VIRTUAL_ERROR_TOPIC, 10)
         self.create_subscription(Point, ERROR_TOPIC, self.error_callback, 10)
+        self.create_subscription(Point, "/vision/predicted_los", self.predicted_los_callback, 10)
         self.create_subscription(Bool, "/vision/captured", self.captured_callback, 10)
         self.create_subscription(VehicleAttitude, "/fmu/out/vehicle_attitude", self.attitude_callback, px4_qos)
         self.watchdog_timer = self.create_timer(0.1, self.watchdog_callback)
@@ -211,6 +240,10 @@ class LosRateBearingServo(Node):
             float(msg.q[3]),
         )
         self.have_attitude = True
+
+    def predicted_los_callback(self, msg):
+        self.latest_transformer_los = msg
+        self.latest_transformer_time = self.get_clock().now()
 
     def error_callback(self, raw_error):
         if self.captured:
@@ -243,6 +276,19 @@ class LosRateBearingServo(Node):
         )
         guide_los_x = self.lerp(los_x, pred_los_x, predict_weight)
         guide_los_y = self.lerp(los_y, pred_los_y, predict_weight)
+        transformer_weight_x, transformer_weight_y, transformer_delta_x, transformer_delta_y = self.transformer_guidance_delta(
+            los_x,
+            los_y,
+            los_rate_x,
+            los_rate_y,
+            raw_error.z,
+            now,
+        )
+        if self.transformer_guidance_mode == "angle":
+            guide_los_x += transformer_weight_x * transformer_delta_x
+            guide_los_y += transformer_weight_y * transformer_delta_y
+        guide_los_x = self._clamp(guide_los_x, -self.predict_max_angle_rad, self.predict_max_angle_rad)
+        guide_los_y = self._clamp(guide_los_y, -self.predict_max_angle_rad, self.predict_max_angle_rad)
         close_ready = close_area and close_alignment <= 1.0
         terminal_ready = (
             terminal_area
@@ -285,6 +331,24 @@ class LosRateBearingServo(Node):
             self.angle_gain_vertical * guide_los_y
             + self.navigation_gain_vertical * forward * los_rate_y
         )
+        if self.transformer_guidance_mode == "velocity":
+            lead_rate_x, lead_rate_y = self.transformer_lead_rates(transformer_delta_x, transformer_delta_y)
+            lateral += (
+                correction_scale
+                * transformer_weight_x
+                * self.transformer_velocity_gain_lateral
+                * self.navigation_gain_lateral
+                * forward
+                * lead_rate_x
+            )
+            vertical -= (
+                correction_scale
+                * transformer_weight_y
+                * self.transformer_velocity_gain_vertical
+                * self.navigation_gain_vertical
+                * forward
+                * lead_rate_y
+            )
         yaw_rate = -correction_scale * predictive_yaw_scale * (
             self.yaw_angle_gain * guide_los_x
             + self.yaw_rate_gain * los_rate_x
@@ -321,7 +385,8 @@ class LosRateBearingServo(Node):
             "state={} raw=({:.1f},{:.1f}) virt=({:.1f},{:.1f}) off=({:.1f},{:.1f}) "
             "los=({:.3f},{:.3f}) pred=({:.3f},{:.3f}) los_rate=({:.3f},{:.3f}) "
             "area={:.0f} close={} terminal={} align=({:.2f},{:.2f}) "
-            "keep=({:.2f},{:.2f}) predict=({:.2f},{:.2f}) scale={:.2f} corr={:.2f} "
+            "keep=({:.2f},{:.2f}) predict=({:.2f},{:.2f}) transformer=({:.2f},{:.2f},{:.3f},{:.3f}) "
+            "scale={:.2f} corr={:.2f} "
             "cmd=({:.2f},{:.2f},{:.2f},{:.2f})".format(
                 self.state,
                 raw_error.x,
@@ -345,6 +410,10 @@ class LosRateBearingServo(Node):
                 keep_weight,
                 predict_weight,
                 predict_risk,
+                transformer_weight_x,
+                transformer_weight_y,
+                transformer_delta_x,
+                transformer_delta_y,
                 forward_scale,
                 correction_scale,
                 cmd.linear.x,
@@ -370,6 +439,42 @@ class LosRateBearingServo(Node):
         virtual_error.y = float(raw_error.y - offset_y)
         virtual_error.z = float(raw_error.z)
         return virtual_error, offset_x, offset_y
+
+    def transformer_guidance_delta(self, los_x, los_y, los_rate_x, los_rate_y, area, now):
+        if not self.enable_transformer_guidance:
+            return 0.0, 0.0, 0.0, 0.0
+        if area < self.transformer_start_area_px:
+            return 0.0, 0.0, 0.0, 0.0
+        if self.latest_transformer_los is None or self.latest_transformer_time is None:
+            return 0.0, 0.0, 0.0, 0.0
+
+        age_sec = (now - self.latest_transformer_time).nanoseconds / 1e9
+        if age_sec > self.transformer_stale_sec:
+            return 0.0, 0.0, 0.0, 0.0
+
+        pred_x = float(self.latest_transformer_los.x)
+        pred_y = float(self.latest_transformer_los.y)
+        if not math.isfinite(pred_x) or not math.isfinite(pred_y):
+            return 0.0, 0.0, 0.0, 0.0
+
+        max_delta = max(self.transformer_max_delta_rad, 1e-3)
+        delta_x = self._clamp(pred_x - los_x, -max_delta, max_delta)
+        delta_y = self._clamp(pred_y - los_y, -max_delta, max_delta)
+        alpha_x = self._clamp(self.transformer_alpha_x, 0.0, 1.0)
+        alpha_y = self._clamp(self.transformer_alpha_y, 0.0, 1.0)
+
+        if self.transformer_consistency_gate:
+            rate_deadband = max(self.transformer_rate_deadband_rad_s, 0.0)
+            if abs(los_rate_x) > rate_deadband and delta_x * los_rate_x < 0.0:
+                alpha_x = 0.0
+            if abs(los_rate_y) > rate_deadband and delta_y * los_rate_y < 0.0:
+                alpha_y = 0.0
+
+        return alpha_x, alpha_y, delta_x, delta_y
+
+    def transformer_lead_rates(self, delta_x, delta_y):
+        horizon = max(self.transformer_horizon_sec, 1e-3)
+        return delta_x / horizon, delta_y / horizon
 
     def pixel_error_to_los(self, error):
         return math.atan2(error.x, self.fx), math.atan2(error.y, self.fy)

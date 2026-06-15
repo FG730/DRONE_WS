@@ -1,0 +1,117 @@
+paper_display_units:
+  speed: km/h
+  note: >
+    PX4, ROS 2, Gazebo, and the CSV logger use SI units internally. Figures
+    and paper tables may display speed in km/h using km_h = m_s * 3.6.
+
+unit_conversion:
+  m_s_to_km_h: 3.6
+  target_speed_3_m_s_km_h: 10.8
+  ownship_forward_5_m_s_km_h: 18.0
+  ownship_forward_8_m_s_km_h: 28.8
+  ownship_forward_9_m_s_km_h: 32.4
+  ownship_forward_10_m_s_km_h: 36.0
+  target_speed_30_km_h_m_s: 8.333333
+  ownship_speed_50_km_h_m_s: 13.888889
+
+common_target_reference:
+  nominal_target_speed_m_s: 3.0
+  nominal_target_speed_km_h: 10.8
+  capture_radius_m: 0.8
+  start_x_m: 8.0
+  start_y_m: 1.0
+  start_z_m: 4.0
+  target_dt_sec: 0.02
+
+methods:
+  v1_pixel_error_ibvs:
+    role: first_generation_baseline
+    node: attitude_pn_bearing_servo
+    config_file: config/pixel_error_ibvs_arc3d_baseline.yaml
+    controller_profile: arc_balanced
+    description: >
+      Image-plane pixel-error visual servoing with attitude compensation and
+      PID-like lateral/vertical/yaw corrections.
+    key_parameters:
+      base_forward_speed_m_s: 7.0
+      base_forward_speed_km_h: 25.2
+      max_forward_speed_m_s: 8.0
+      max_forward_speed_km_h: 28.8
+      max_lateral_speed_m_s: 2.8
+      max_lateral_speed_km_h: 10.08
+      max_vertical_speed_m_s: 2.3
+      max_vertical_speed_km_h: 8.28
+      max_yaw_rate_rad_s: 0.42
+      terminal_area_px: 18000.0
+
+  v2_los_rate_predictive_terminal:
+    role: improved_guidance_without_transformer
+    node: los_rate_bearing_servo
+    config_file: config/los_rate_predictive_terminal.yaml
+    controller_profile: los_rate_predictive
+    description: >
+      LOS-angle and LOS-rate guidance with virtual attitude compensation,
+      keep-in-view logic, and predictive terminal slowing/boosting.
+    key_parameters:
+      fixed_forward_speed_m_s: 9.0
+      fixed_forward_speed_km_h: 32.4
+      max_forward_speed_m_s: 10.0
+      max_forward_speed_km_h: 36.0
+      max_lateral_speed_m_s: 4.5
+      max_lateral_speed_km_h: 16.2
+      max_vertical_speed_m_s: 1.3
+      max_vertical_speed_km_h: 4.68
+      max_yaw_rate_rad_s: 0.70
+      predict_time_sec: 0.25
+      predict_forward_scale: 0.20
+      predict_lateral_boost: 1.45
+      predict_vertical_boost: 1.10
+
+  v3_transformer_velocity_feedforward:
+    role: transformer_augmented_guidance
+    node: los_rate_bearing_servo + los_transformer_predictor
+    predictor_config_file: config/transformer_predictor.yaml
+    predictor_checkpoint: models/los_delta_transformer_v2/best.pt
+    controller_profile: los_rate_predictive
+    description: >
+      Transformer predicts short-horizon LOS increments. The guidance layer
+      keeps the stable LOS-rate feedback loop and injects the prediction as
+      terminal velocity feed-forward rather than directly replacing the current
+      LOS error.
+    default_random_maneuver_parameters:
+      enable_transformer_guidance: true
+      transformer_guidance_mode: velocity
+      transformer_alpha_x: 0.06
+      transformer_alpha_y: 0.06
+      transformer_start_area_px: 8000.0
+      transformer_max_delta_rad: 0.12
+      transformer_horizon_sec: 0.30
+      transformer_velocity_gain_lateral: 0.35
+      transformer_velocity_gain_vertical: 0.35
+    planar_s_curve_trial_parameters:
+      note: >
+        Experimental, not yet robust. Use for continued tuning rather than as
+        the final planar S-curve result.
+      predict_forward_scale: 0.45
+      transformer_velocity_gain_lateral: 0.60
+      transformer_velocity_gain_vertical: 0.0
+      predict_vertical_boost: 0.70
+
+paper_experiment_plan:
+  robustness_trials:
+    seeds: 50
+    compare_methods:
+      - v1_pixel_error_ibvs
+      - v2_los_rate_predictive_terminal
+      - v3_transformer_velocity_feedforward
+    required_same_conditions: >
+      Use identical seeds, target trajectory parameters, initial pose, capture
+      radius, and timeout for all three methods.
+  high_speed_pressure_test:
+    target_speed_km_h: 30.0
+    target_speed_m_s: 8.333333
+    ownship_speed_limit_km_h: 50.0
+    ownship_speed_limit_m_s: 13.888889
+    note: >
+      Treat this as a pressure-test group. Do not relabel 3 m/s data as
+      30 km/h; rerun the experiment if these speeds are reported.

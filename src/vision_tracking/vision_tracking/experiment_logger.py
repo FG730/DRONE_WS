@@ -8,10 +8,12 @@ from datetime import datetime
 
 import rclpy
 from geometry_msgs.msg import Point, Twist
+from px4_msgs.msg import VehicleAttitude
 from px4_msgs.msg import VehicleLocalPosition
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool
+from std_msgs.msg import Float32
 from std_msgs.msg import String
 
 
@@ -63,9 +65,23 @@ class ExperimentLogger(Node):
                 "cmd_vy",
                 "cmd_vz",
                 "cmd_yaw_rate",
+                "pred_theta_x",
+                "pred_theta_y",
+                "pred_area_log",
+                "pred_error_x_px",
+                "pred_error_y_px",
+                "pred_area_px",
+                "risk_probability",
+                "transformer_state",
                 "drone_x",
                 "drone_y",
                 "drone_z",
+                "drone_vx",
+                "drone_vy",
+                "drone_vz",
+                "drone_roll",
+                "drone_pitch",
+                "drone_yaw",
                 "target_x",
                 "target_y",
                 "target_z",
@@ -82,7 +98,13 @@ class ExperimentLogger(Node):
         self.latest_virtual_error = None
         self.latest_cmd = None
         self.latest_state = "UNKNOWN"
+        self.latest_predicted_los = None
+        self.latest_predicted_error = None
+        self.latest_risk_probability = math.nan
+        self.latest_transformer_state = "UNKNOWN"
         self.drone_pos = None
+        self.drone_vel = None
+        self.drone_attitude = None
         self.target_pos = None
         self.target_first_seen_time = None
         self.start_time = self.get_clock().now()
@@ -104,6 +126,10 @@ class ExperimentLogger(Node):
         self.create_subscription(Point, "/vision/virtual_target_error", self.virtual_error_callback, 10)
         self.create_subscription(Twist, "/vision/cmd_velocity", self.cmd_callback, 10)
         self.create_subscription(String, "/vision/tracking_state", self.state_callback, 10)
+        self.create_subscription(Point, "/vision/predicted_los", self.predicted_los_callback, 10)
+        self.create_subscription(Point, "/vision/predicted_target_error", self.predicted_error_callback, 10)
+        self.create_subscription(Float32, "/vision/risk_probability", self.risk_probability_callback, 10)
+        self.create_subscription(String, "/vision/transformer_state", self.transformer_state_callback, 10)
         self.create_subscription(
             VehicleLocalPosition,
             self.drone_position_topic,
@@ -116,6 +142,7 @@ class ExperimentLogger(Node):
             self.local_position_callback,
             px4_qos,
         )
+        self.create_subscription(VehicleAttitude, "/fmu/out/vehicle_attitude", self.attitude_callback, px4_qos)
         self.captured_pub = self.create_publisher(Bool, "/vision/captured", 10)
         self.timer = self.create_timer(1.0 / self.log_rate_hz, self.timer_callback)
 
@@ -147,6 +174,18 @@ class ExperimentLogger(Node):
     def state_callback(self, msg):
         self.latest_state = msg.data
 
+    def predicted_los_callback(self, msg):
+        self.latest_predicted_los = msg
+
+    def predicted_error_callback(self, msg):
+        self.latest_predicted_error = msg
+
+    def risk_probability_callback(self, msg):
+        self.latest_risk_probability = float(msg.data)
+
+    def transformer_state_callback(self, msg):
+        self.latest_transformer_state = msg.data
+
     def local_position_callback(self, msg):
         if not msg.xy_valid or not msg.z_valid:
             return
@@ -157,8 +196,18 @@ class ExperimentLogger(Node):
 
         if self.swap_px4_xy_to_gazebo:
             self.drone_pos = (px4_y, px4_x, gazebo_z)
+            self.drone_vel = (float(msg.vy), float(msg.vx), float(-msg.vz))
         else:
             self.drone_pos = (px4_x, px4_y, gazebo_z)
+            self.drone_vel = (float(msg.vx), float(msg.vy), float(-msg.vz))
+
+    def attitude_callback(self, msg):
+        self.drone_attitude = self.quaternion_to_euler(
+            float(msg.q[0]),
+            float(msg.q[1]),
+            float(msg.q[2]),
+            float(msg.q[3]),
+        )
 
     def timer_callback(self):
         now = self.get_clock().now()
@@ -186,8 +235,18 @@ class ExperimentLogger(Node):
         cmd_vy = self.latest_cmd.linear.y if self.latest_cmd else math.nan
         cmd_vz = self.latest_cmd.linear.z if self.latest_cmd else math.nan
         cmd_yaw = self.latest_cmd.angular.z if self.latest_cmd else math.nan
+        pred_theta_x = self.latest_predicted_los.x if self.latest_predicted_los else math.nan
+        pred_theta_y = self.latest_predicted_los.y if self.latest_predicted_los else math.nan
+        pred_area_log = self.latest_predicted_los.z if self.latest_predicted_los else math.nan
+        pred_error_x = self.latest_predicted_error.x if self.latest_predicted_error else math.nan
+        pred_error_y = self.latest_predicted_error.y if self.latest_predicted_error else math.nan
+        pred_area = self.latest_predicted_error.z if self.latest_predicted_error else math.nan
 
         drone_x, drone_y, drone_z = self.drone_pos if self.drone_pos else (math.nan, math.nan, math.nan)
+        drone_vx, drone_vy, drone_vz = self.drone_vel if self.drone_vel else (math.nan, math.nan, math.nan)
+        drone_roll, drone_pitch, drone_yaw = (
+            self.drone_attitude if self.drone_attitude else (math.nan, math.nan, math.nan)
+        )
         target_x, target_y, target_z = self.target_pos if self.target_pos else (math.nan, math.nan, math.nan)
 
         self.writer.writerow(
@@ -205,9 +264,23 @@ class ExperimentLogger(Node):
                 "cmd_vy": self.format_float(cmd_vy),
                 "cmd_vz": self.format_float(cmd_vz),
                 "cmd_yaw_rate": self.format_float(cmd_yaw),
+                "pred_theta_x": self.format_float(pred_theta_x),
+                "pred_theta_y": self.format_float(pred_theta_y),
+                "pred_area_log": self.format_float(pred_area_log),
+                "pred_error_x_px": self.format_float(pred_error_x),
+                "pred_error_y_px": self.format_float(pred_error_y),
+                "pred_area_px": self.format_float(pred_area),
+                "risk_probability": self.format_float(self.latest_risk_probability),
+                "transformer_state": self.latest_transformer_state,
                 "drone_x": self.format_float(drone_x),
                 "drone_y": self.format_float(drone_y),
                 "drone_z": self.format_float(drone_z),
+                "drone_vx": self.format_float(drone_vx),
+                "drone_vy": self.format_float(drone_vy),
+                "drone_vz": self.format_float(drone_vz),
+                "drone_roll": self.format_float(drone_roll),
+                "drone_pitch": self.format_float(drone_pitch),
+                "drone_yaw": self.format_float(drone_yaw),
                 "target_x": self.format_float(target_x),
                 "target_y": self.format_float(target_y),
                 "target_z": self.format_float(target_z),
@@ -325,6 +398,23 @@ class ExperimentLogger(Node):
         if value is None or math.isnan(value):
             return ""
         return f"{value:.6f}"
+
+    @staticmethod
+    def quaternion_to_euler(w, x, y, z):
+        sinr_cosp = 2.0 * (w * x + y * z)
+        cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+        roll = math.atan2(sinr_cosp, cosr_cosp)
+
+        sinp = 2.0 * (w * y - z * x)
+        if abs(sinp) >= 1.0:
+            pitch = math.copysign(math.pi / 2.0, sinp)
+        else:
+            pitch = math.asin(sinp)
+
+        siny_cosp = 2.0 * (w * z + x * y)
+        cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+        yaw = math.atan2(siny_cosp, cosy_cosp)
+        return roll, pitch, yaw
 
     def destroy_node(self):
         self.csv_file.flush()

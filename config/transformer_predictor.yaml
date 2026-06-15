@@ -1,0 +1,51 @@
+profile: transformer_visual_servo_predictor
+purpose: offline_training_online_inference_for_visual_error_prediction
+
+dataset:
+  history_len: 20
+  horizon: 6
+  nominal_rate_hz: 20.0
+  history_sec: 1.0
+  prediction_sec: 0.3
+  features:
+    - error_x_px
+    - error_y_px
+    - area_px
+    - virtual_error_x_px
+    - virtual_error_y_px
+    - cmd_vx
+    - cmd_vy
+    - cmd_vz
+    - cmd_yaw_rate
+  targets:
+    - error_x_px
+    - error_y_px
+    - area_px
+
+target_data_collection:
+  recommended_mode: random_maneuver
+  speed_range_m_s: [2.0, 5.0]
+  random_lateral_amp_m: [1.0, 3.0]
+  random_z_amp_m: [0.2, 0.8]
+  random_turn_amp_deg: [8.0, 25.0]
+  random_period_sec: [3.0, 9.0]
+  note: >
+    Use randomized target maneuvers for Transformer training. Keep standard
+    straight, arc, 3D arc, planar S, and 3D S trajectories for final paper
+    evaluation rather than as the only training data.
+
+model_current_version:
+  type: lightweight_time_series_transformer
+  prediction_target: delta_los
+  checkpoint: ~/drone_ws/models/los_delta_transformer_v2/best.pt
+  encoder_layers: 2
+  d_model: 64
+  attention_heads: 4
+  dropout: 0.1
+  output_dim: 3
+
+online_use:
+  inference_only: true
+  guidance_fusion:
+    alpha_initial: 0.4
+    formula: guidance_error = (1 - alpha) * current_error + alpha * predicted_error
